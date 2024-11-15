@@ -113,6 +113,11 @@ __global__ void encoder_backward_kernel(float* dwte, float* dwpe,
     }
 }
 
+/**
+ * can be seen as a N * C matrix
+ * 
+ * 32 threads in one warp cooperate on the same row of the matrix, the total row is N, the total threads is N * 32
+ */
 __global__ void layernorm_forward_kernel3(float* __restrict__ out, float* __restrict__ mean, float* __restrict__ rstd,
                                     const float*  __restrict__ inp, const float*  __restrict__ weight,
                                     const float* __restrict__ bias, int N, int C) {
@@ -255,7 +260,7 @@ __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const
     if(idx >= N * T) {
         return;
     }
-    int own_pos = idx % T;
+    int own_pos = idx % T; // zyy: compute the lower triangular part, get the last column id
     int pos_by_4 = own_pos / 4;
 
     // one row of inp, i.e. inp[idx, :] of shape (T,)
@@ -278,6 +283,9 @@ __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const
         }
     }
 
+    // zyy: the rest columns(own_pos % 4)
+    // for example, if own_pos = 3, the above for loop not process data, and 0,1,2,3 is processed here,
+    // but if own_pos = 4, 0,1,2,3 is processed above, 4 is processed here.
     if(4*pos_by_4 + warp.thread_rank() <= own_pos) {
         float old_maxval = maxval;
         maxval = fmaxf(maxval, x[4*pos_by_4 + warp.thread_rank()]);
@@ -1205,6 +1213,7 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, int B, int T) {
             num_activations += model->act_sizes[i];
         }
         model->num_activations = num_activations;
+        printf("need %zu MiB for activations\n", (num_activations * sizeof(float)) >> 20); // >> 20 is /(1024*1024)
         model->acts_memory = malloc_and_point_activations(&model->acts, model->act_sizes);
         printf("allocated %zu MiB for activations\n", (num_activations * sizeof(float)) >> 20); // >> 20 is /(1024*1024)
         // also create memory for caching inputs and targets
@@ -1566,7 +1575,9 @@ int main(int argc, char *argv[]) {
     const char* val_data_pattern = "dev/data/tinyshakespeare/tiny_shakespeare_val.bin";
     const char* output_log_file = NULL;
     int B = 4; // batch size
-    int T = 1024; // sequence length max
+    // int B = 8; // batch size
+    // int T = 1024; // sequence length max
+    int T = 256; // sequence length max
     float learning_rate = 3e-4f;
     int val_loss_every = 20; // every how many steps do we eval validation loss?
     int val_max_steps = 20; // how many batches max do we eval for validation loss?
